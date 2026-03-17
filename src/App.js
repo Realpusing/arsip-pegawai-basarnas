@@ -1,25 +1,40 @@
 import React, { useState } from 'react'
 import { Toaster } from 'react-hot-toast'
 import { AuthProvider, useAuth } from './context/AuthContext'
-import { UploadProvider } from './context/UploadContext'
 import Layout from './components/layout/Layout'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
-import PegawaiPage from './pages/PegawaiPage'
-import AbsenPage from './pages/AbsenPage'
+import AdminPegawaiPage from './pages/admin/AdminPegawaiPage'
+import AdminAbsenPage from './pages/admin/AdminAbsenPage'
+import PimpinanPegawaiPage from './pages/pimpinan/PimpinanPegawaiPage'
+import UserProfilePage from './pages/user/UserProfilePage'
+import SettingsPage from './pages/SettingsPage'
 
 function AppContent() {
-  const { user } = useAuth()
-  const [page, setPage] = useState('pegawai')
+  const { user, isAdmin, isPimpinan, isPejabat, isUser } = useAuth()
+  const [page, setPage] = useState(isUser ? 'pegawai' : 'dashboard')
 
   if (!user) return <LoginPage />
 
   const renderPage = () => {
     switch (page) {
-      case 'dashboard': return <DashboardPage />
-      case 'pegawai': return <PegawaiPage />
-      case 'absen': return <AbsenPage />
-      default: return <DashboardPage />
+      case 'dashboard':
+        if (isUser) return <UserProfilePage />
+        return <DashboardPage />
+      case 'pegawai':
+        if (isAdmin) return <AdminPegawaiPage />
+        if (isPimpinan || isPejabat) return <PimpinanPegawaiPage />
+        if (isUser) return <UserProfilePage />
+        return <DashboardPage />
+      case 'absen':
+        if (isAdmin) return <AdminAbsenPage />
+        if (isUser) return <UserProfilePage />
+        return <DashboardPage />
+      case 'settings':
+        return <SettingsPage />
+      default:
+        if (isUser) return <UserProfilePage />
+        return <DashboardPage />
     }
   }
 
@@ -33,10 +48,8 @@ function AppContent() {
 function App() {
   return (
     <AuthProvider>
-      <UploadProvider>
-        <Toaster position="top-right" />
-        <AppContent />
-      </UploadProvider>
+      <Toaster position="top-right" />
+      <AppContent />
     </AuthProvider>
   )
 }

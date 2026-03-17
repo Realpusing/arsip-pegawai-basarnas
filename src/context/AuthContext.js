@@ -10,18 +10,33 @@ export function AuthProvider({ children }) {
   })
 
   const login = async (email, password) => {
-    const { data, error } = await supabase
+    // 1. Cari user
+    const { data: userData, error: userError } = await supabase
       .from('users')
-      .select('*, level:level_id(nama)')
+      .select('*, level:level_id(id, nama)')
       .eq('email', email)
       .single()
 
-    if (error || !data) throw new Error('Email tidak ditemukan')
-    if (data.password !== password) throw new Error('Password salah')
+    if (userError || !userData) throw new Error('Email tidak ditemukan')
+    if (userData.password !== password) throw new Error('Password salah')
 
-    localStorage.setItem('user', JSON.stringify(data))
-    setUser(data)
-    return data
+    // 2. Cari profile user ini
+    const { data: profileData } = await supabase
+      .from('profile')
+      .select('*')
+      .eq('user_id', userData.id)
+      .single()
+
+    // 3. Gabung data user + profile
+    const fullUser = {
+      ...userData,
+      profile: profileData || null,
+      profile_id: profileData?.id || null
+    }
+
+    localStorage.setItem('user', JSON.stringify(fullUser))
+    setUser(fullUser)
+    return fullUser
   }
 
   const logout = () => {
@@ -29,12 +44,40 @@ export function AuthProvider({ children }) {
     setUser(null)
   }
 
-  const isAdmin = user?.level?.nama === 'Admin'
-  const isPimpinan = user?.level?.nama === 'Pimpinan'
-  const isPejabat = user?.level?.nama === 'Pejabat'
+  // Role checks
+  const levelName = user?.level?.nama || ''
+  const isAdmin = levelName === 'Admin'
+  const isPimpinan = levelName === 'Pimpinan'
+  const isPejabat = levelName === 'Pejabat'
+  const isUser = levelName === 'User'
+
+  // Bisa lihat semua pegawai?
+  const canViewAll = isAdmin || isPimpinan || isPejabat
+  // Bisa edit data?
+  const canEdit = isAdmin
+  // Bisa upload berkas?
+  const canUpload = isAdmin
+  // Bisa input absen?
+  const canAbsen = isAdmin
+  // Bisa kelola folder?
+  const canManageFolder = isAdmin
 
   return (
-    <AuthContext.Provider value={{ user, login, logout, isAdmin, isPimpinan, isPejabat }}>
+    <AuthContext.Provider value={{
+      user,
+      login,
+      logout,
+      isAdmin,
+      isPimpinan,
+      isPejabat,
+      isUser,
+      canViewAll,
+      canEdit,
+      canUpload,
+      canAbsen,
+      canManageFolder,
+      levelName
+    }}>
       {children}
     </AuthContext.Provider>
   )
