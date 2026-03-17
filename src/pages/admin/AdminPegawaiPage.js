@@ -1,0 +1,394 @@
+import React, { useState, useEffect, useCallback, useRef } from 'react'
+import { supabase } from '../../lib/supabase'
+import {
+  compressPDF, uploadToGoogleDrive, downloadFromGoogleDrive,
+  decompressZip, deleteFromGoogleDrive, extractFileId, formatSize,
+  loginGoogle, isGoogleLoggedIn
+} from '../../lib/googleDrive'
+import toast from 'react-hot-toast'
+
+function AdminPegawaiPage() {
+  const [pegawai, setPegawai] = useState([])
+  const [folders, setFolders] = useState([])
+  const [berkas, setBerkas] = useState([])
+  const [selectedPegawai, setSelectedPegawai] = useState(null)
+  const [searchPegawai, setSearchPegawai] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [uploading, setUploading] = useState(false)
+  const [uploadStatus, setUploadStatus] = useState('')
+  const [viewingPDF, setViewingPDF] = useState(false)
+  const [pdfBlobUrl, setPdfBlobUrl] = useState(null)
+  const [loadingPDF, setLoadingPDF] = useState(false)
+  const [gLoggedIn, setGLoggedIn] = useState(isGoogleLoggedIn())
+  const [modal, setModal] = useState(null)
+  const [modalData, setModalData] = useState(null)
+  const fileInputRef = useRef(null)
+
+  useEffect(() => { loadPegawai(); loadFolders() }, [])
+
+  const loadPegawai = async () => {
+    const { data } = await supabase.from('profile').select('*, tingkat:tingkat_id(nama)').order('nama')
+    if (data) setPegawai(data)
+    setLoading(false)
+  }
+
+  const loadFolders = async () => {
+    const { data } = await supabase.from('folder').select('*').order('created_at')
+    if (data) setFolders(data)
+  }
+
+  const loadBerkas = useCallback(async (pid) => {
+    const { data } = await supabase.from('berkas').select('*').eq('profile_id', pid).order('created_at')
+    if (data) setBerkas(data)
+  }, [])
+
+  const selectPegawai = (p) => { setSelectedPegawai(p); loadBerkas(p.id) }
+
+  // Google Login
+  const handleGoogleLogin = async () => {
+    try { await loginGoogle(); setGLoggedIn(true); toast.success('Google Drive terhubung!') }
+    catch (err) { toast.error('Gagal: ' + err.message) }
+  }
+
+  // ===== PEGAWAI CRUD =====
+  const handleSavePegawai = async (e) => {
+    e.preventDefault()
+    const fd = new FormData(e.target)
+    const d = {
+      nama: fd.get('nama'), nip: fd.get('nip'), nik: fd.get('nik'),
+      tanggal_lahir: fd.get('tanggal_lahir'), pangkat_gol_ruang: fd.get('pangkat_gol_ruang'),
+      jabatan: fd.get('jabatan'), jenjang_jabatan: fd.get('jenjang_jabatan'),
+      kelompok_jabatan: fd.get('kelompok_jabatan'), kelas_jabatan: fd.get('kelas_jabatan'),
+      tmt_cpns: fd.get('tmt_cpns') || null,
+      nama_pimpinan_langsung: fd.get('nama_pimpinan_langsung'),
+      nip_pimpinan_langsung: fd.get('nip_pimpinan_langsung'),
+      jabatan_pimpinan_langsung: fd.get('jabatan_pimpinan_langsung'),
+      nama_pimpinan: fd.get('nama_pimpinan'), nip_pimpinan: fd.get('nip_pimpinan'),
+      jabatan_pimpinan: fd.get('jabatan_pimpinan'),
+      tingkat_id: fd.get('tingkat_id') ? parseInt(fd.get('tingkat_id')) : null
+    }
+    try {
+      if (modal === 'editPegawai') {
+        await supabase.from('profile').update(d).eq('id', modalData.id)
+        toast.success('Diupdate!')
+        if (selectedPegawai?.id === modalData.id) {
+          const { data: u } = await supabase.from('profile').select('*, tingkat:tingkat_id(nama)').eq('id', modalData.id).single()
+          if (u) setSelectedPegawai(u)
+        }
+      } else {
+        await supabase.from('profile').insert(d)
+        toast.success('Ditambahkan!')
+      }
+      setModal(null); setModalData(null); loadPegawai()
+    } catch (err) { toast.error(err.message) }
+  }
+
+  const deletePegawai = async (p) => {
+    if (!window.confirm(`Hapus "${p.nama}"? Semua berkas ikut terhapus!`)) return
+    try {
+      const { data: bd } = await supabase.from('berkas').select('lokasi_berkas').eq('profile_id', p.id)
+      for (const b of (bd || [])) { const fid = extractFileId(b.lokasi_berkas); if (fid) try { await deleteFromGoogleDrive(fid) } catch(e){} }
+      await supabase.from('profile').delete().eq('id', p.id)
+      toast.success('Dihapus!')
+      if (selectedPegawai?.id === p.id) { setSelectedPegawai(null); setBerkas([]) }
+      loadPegawai()
+    } catch (err) { toast.error(err.message) }
+  }
+
+  // ===== FOLDER CRUD =====
+  const handleSaveFolder = async (e) => {
+    e.preventDefault()
+    const fd = new FormData(e.target)
+    const d = { nama_folder: fd.get('nama_folder'), level_folder: fd.get('level_folder') }
+    try {
+      if (modal === 'editFolder') { await supabase.from('folder').update(d).eq('id', modalData.id) }
+      else { await supabase.from('folder').insert(d) }
+      toast.success('Folder disimpan!')
+      setModal(null); setModalData(null); loadFolders()
+    } catch (err) { toast.error(err.message) }
+  }
+
+  const deleteFolder = async (f) => {
+    if (!window.confirm(`Hapus folder "${f.nama_folder}"?`)) return
+    try {
+      const { data: bd } = await supabase.from('berkas').select('lokasi_berkas').eq('folder_id', f.id)
+      for (const b of (bd || [])) { const fid = extractFileId(b.lokasi_berkas); if (fid) try { await deleteFromGoogleDrive(fid) } catch(e){} }
+      await supabase.from('berkas').delete().eq('folder_id', f.id)
+      await supabase.from('folder').delete().eq('id', f.id)
+      toast.success('Folder dihapus!')
+      loadFolders(); if (selectedPegawai) loadBerkas(selectedPegawai.id)
+    } catch (err) { toast.error(err.message) }
+  }
+
+  // ===== BERKAS UPLOAD =====
+  const handleUploadBerkas = async (e) => {
+    e.preventDefault()
+    if (!isGoogleLoggedIn()) {
+      try { await loginGoogle(); setGLoggedIn(true) }
+      catch { toast.error('Login Google Drive dulu!'); return }
+    }
+    const fd = new FormData(e.target)
+    const file = fd.get('file_pdf'), namaBerkas = fd.get('nama_berkas')
+    const folderId = parseInt(modalData.folderId)
+    const folder = folders.find(f => f.id === folderId)
+    if (!file?.size) { toast.error('Pilih file PDF!'); return }
+    if (file.type !== 'application/pdf') { toast.error('Hanya PDF!'); return }
+    if (file.size > 50*1024*1024) { toast.error('Maks 50MB!'); return }
+    setUploading(true)
+    try {
+      const c = await compressPDF(file, setUploadStatus)
+      const r = await uploadToGoogleDrive(c.zipBlob, c.zipName, folder?.nama_folder||'Unknown', selectedPegawai.nama, setUploadStatus)
+      setUploadStatus('💾 Menyimpan...')
+      await supabase.from('berkas').insert({ folder_id: folderId, profile_id: selectedPegawai.id, nama_berkas: namaBerkas, lokasi_berkas: r.url })
+      toast.success(`Upload berhasil! ${formatSize(c.originalSize)} → ${formatSize(c.compressedSize)} (hemat ${c.savedPercent}%)`, { duration: 5000 })
+      setModal(null); setModalData(null); loadBerkas(selectedPegawai.id)
+    } catch (err) { toast.error(err.message) }
+    finally { setUploading(false); setUploadStatus('') }
+  }
+
+  // ===== VIEW / DOWNLOAD / DELETE BERKAS =====
+  const viewBerkas = async (b) => {
+    const fid = extractFileId(b.lokasi_berkas)
+    if (!fid) { window.open(b.lokasi_berkas,'_blank'); return }
+    setViewingPDF(true); setLoadingPDF(true); setPdfBlobUrl(null)
+    try {
+      const zip = await downloadFromGoogleDrive(fid)
+      const { pdfBlob } = await decompressZip(zip)
+      setPdfBlobUrl(URL.createObjectURL(pdfBlob))
+    } catch (err) { toast.error(err.message); window.open(b.lokasi_berkas,'_blank'); setViewingPDF(false) }
+    finally { setLoadingPDF(false) }
+  }
+
+  const closePDF = () => { if (pdfBlobUrl) URL.revokeObjectURL(pdfBlobUrl); setPdfBlobUrl(null); setViewingPDF(false) }
+
+  const downloadBerkas = async (b) => {
+    const fid = extractFileId(b.lokasi_berkas)
+    if (!fid) { window.open(b.lokasi_berkas,'_blank'); return }
+    try {
+      toast('⬇️ Mendownload...'); const zip = await downloadFromGoogleDrive(fid)
+      const { pdfBlob, pdfName } = await decompressZip(zip)
+      const u = URL.createObjectURL(pdfBlob); const a = document.createElement('a')
+      a.href = u; a.download = pdfName || b.nama_berkas+'.pdf'; a.click(); URL.revokeObjectURL(u)
+      toast.success('Selesai!')
+    } catch (err) { toast.error(err.message); window.open(b.lokasi_berkas,'_blank') }
+  }
+
+  const deleteBerkas = async (b) => {
+    if (!window.confirm(`Hapus "${b.nama_berkas}"?`)) return
+    try {
+      const fid = extractFileId(b.lokasi_berkas)
+      if (fid) try { await deleteFromGoogleDrive(fid) } catch(e){}
+      await supabase.from('berkas').delete().eq('id', b.id)
+      toast.success('Dihapus!'); loadBerkas(selectedPegawai.id)
+    } catch (err) { toast.error(err.message) }
+  }
+
+  const filtered = pegawai.filter(p => p.nama.toLowerCase().includes(searchPegawai.toLowerCase()) || p.nip.includes(searchPegawai))
+
+  if (loading) return <div className="flex justify-center py-20"><div className="animate-spin h-10 w-10 border-t-4 border-orange-500 rounded-full"></div></div>
+
+  return (
+    <div>
+      {/* HEADER */}
+      <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-800">⚙️ Admin - Kelola Pegawai</h1>
+          <p className="text-gray-500 text-sm">Full akses: CRUD pegawai, folder, berkas, & upload ke Google Drive</p>
+        </div>
+        <div>
+          {gLoggedIn ? (
+            <div className="bg-green-50 border border-green-200 rounded-lg px-4 py-2 flex items-center gap-2">
+              <span>✅</span><span className="text-sm text-green-700">Google Drive Terhubung</span>
+            </div>
+          ) : (
+            <button onClick={handleGoogleLogin} className="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-medium">🔗 Hubungkan Google Drive</button>
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+        {/* LEFT: LIST */}
+        <div className="lg:col-span-2 bg-white rounded-xl shadow-sm border flex flex-col" style={{maxHeight:'85vh'}}>
+          <div className="p-4 border-b">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="font-semibold text-sm">👥 Pegawai ({pegawai.length})</h2>
+              <button onClick={()=>{setModal('addPegawai');setModalData(null)}} className="bg-orange-500 text-white px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-orange-600">+ Tambah</button>
+            </div>
+            <input type="text" value={searchPegawai} onChange={e=>setSearchPegawai(e.target.value)} placeholder="🔍 Cari..."
+              className="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-orange-500 outline-none" />
+          </div>
+          <div className="overflow-y-auto flex-1">
+            {filtered.map(p=>(
+              <div key={p.id} onClick={()=>selectPegawai(p)}
+                className={`p-3 border-b cursor-pointer hover:bg-gray-50 ${selectedPegawai?.id===p.id?'bg-orange-50 border-l-4 border-l-orange-500':''}`}>
+                <div className="flex items-center justify-between">
+                  <div className="min-w-0 flex-1">
+                    <p className="font-medium text-sm truncate">{p.nama}</p>
+                    <p className="text-xs text-gray-500">NIP: {p.nip}</p>
+                    <p className="text-xs text-gray-400">{p.jabatan}</p>
+                  </div>
+                  <div className="flex gap-1 ml-2 shrink-0">
+                    <button onClick={e=>{e.stopPropagation();setModal('editPegawai');setModalData(p)}} className="hover:bg-blue-100 p-1 rounded">✏️</button>
+                    <button onClick={e=>{e.stopPropagation();deletePegawai(p)}} className="hover:bg-red-100 p-1 rounded">🗑️</button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* RIGHT: DETAIL */}
+        <div className="lg:col-span-3 space-y-4">
+          {selectedPegawai ? (<>
+            {/* Info */}
+            <div className="bg-white rounded-xl shadow-sm border p-4">
+              <div className="flex items-center gap-3 mb-3">
+                <div className="w-12 h-12 bg-orange-500 rounded-full flex items-center justify-center text-white text-lg font-bold">{selectedPegawai.nama?.[0]}</div>
+                <div><h2 className="text-lg font-bold">{selectedPegawai.nama}</h2><p className="text-sm text-gray-500">NIP: {selectedPegawai.nip}</p></div>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                {[{l:'NIK',v:selectedPegawai.nik},{l:'Tgl Lahir',v:selectedPegawai.tanggal_lahir?new Date(selectedPegawai.tanggal_lahir).toLocaleDateString('id-ID'):'-'},{l:'Usia',v:selectedPegawai.usia?`${selectedPegawai.usia} th`:'-'},{l:'Pangkat/Gol',v:selectedPegawai.pangkat_gol_ruang},{l:'Jabatan',v:selectedPegawai.jabatan},{l:'Jenjang',v:selectedPegawai.jenjang_jabatan},{l:'Kelompok',v:selectedPegawai.kelompok_jabatan},{l:'Kelas',v:selectedPegawai.kelas_jabatan},{l:'TMT CPNS',v:selectedPegawai.tmt_cpns?new Date(selectedPegawai.tmt_cpns).toLocaleDateString('id-ID'):'-'},{l:'Masa Kerja',v:`${selectedPegawai.masa_kerja_tahun||0}th ${selectedPegawai.masa_kerja_bulan||0}bl ${selectedPegawai.masa_kerja_hari||0}hr`},{l:'Pimpinan Lsg',v:selectedPegawai.nama_pimpinan_langsung},{l:'Pimpinan',v:selectedPegawai.nama_pimpinan}].map((x,i)=>(
+                  <div key={i} className="bg-gray-50 rounded p-2"><p className="text-xs text-gray-400">{x.l}</p><p className="text-xs font-medium truncate">{x.v||'-'}</p></div>
+                ))}
+              </div>
+            </div>
+
+            {/* Folders */}
+            <div className="bg-white rounded-xl shadow-sm border">
+              <div className="p-4 border-b flex items-center justify-between">
+                <h3 className="font-semibold text-sm">📁 Folder & Berkas</h3>
+                <button onClick={()=>{setModal('addFolder');setModalData(null)}} className="bg-orange-500 text-white px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-orange-600">+ Folder</button>
+              </div>
+              <div className="p-4 space-y-3 overflow-y-auto" style={{maxHeight:'55vh'}}>
+                {folders.map(folder=>{
+                  const fb=berkas.filter(b=>b.folder_id===folder.id)
+                  return(<div key={folder.id} className="border rounded-lg overflow-hidden">
+                    <div className="bg-gray-50 px-3 py-2 flex items-center justify-between">
+                      <div className="flex items-center gap-2 flex-1 min-w-0">
+                        <span>📁</span><span className="font-medium text-sm truncate">{folder.nama_folder}</span>
+                        <span className={`text-xs px-2 py-0.5 rounded-full shrink-0 ${folder.level_folder==='Sangat Penting'?'bg-red-100 text-red-600':folder.level_folder==='Penting'?'bg-yellow-100 text-yellow-700':'bg-gray-100 text-gray-600'}`}>{folder.level_folder}</span>
+                        <span className="text-xs text-gray-400">({fb.length})</span>
+                      </div>
+                      <div className="flex gap-1 shrink-0">
+                        <button onClick={()=>{setModal('uploadBerkas');setModalData({folderId:folder.id})}} className="bg-blue-500 text-white px-2 py-1 rounded text-xs hover:bg-blue-600">📤 Upload</button>
+                        <button onClick={()=>{setModal('editFolder');setModalData(folder)}} className="hover:bg-blue-100 p-1 rounded text-xs">✏️</button>
+                        <button onClick={()=>deleteFolder(folder)} className="hover:bg-red-100 p-1 rounded text-xs">🗑️</button>
+                      </div>
+                    </div>
+                    <div className="p-2">
+                      {fb.length===0?<p className="text-xs text-gray-400 text-center py-2">Kosong</p>:fb.map(b=>(
+                        <div key={b.id} className="flex items-center justify-between bg-gray-50 p-2 rounded hover:bg-gray-100 mb-1">
+                          <div className="flex items-center gap-2 min-w-0 flex-1"><span>📄</span><p className="text-sm font-medium truncate">{b.nama_berkas}</p></div>
+                          <div className="flex gap-1 shrink-0 ml-2">
+                            <button onClick={()=>viewBerkas(b)} className="bg-green-100 text-green-600 px-2 py-1 rounded text-xs hover:bg-green-200">👁️</button>
+                            <button onClick={()=>downloadBerkas(b)} className="bg-blue-100 text-blue-600 px-2 py-1 rounded text-xs hover:bg-blue-200">⬇️</button>
+                            <button onClick={()=>deleteBerkas(b)} className="bg-red-100 text-red-600 px-2 py-1 rounded text-xs hover:bg-red-200">🗑️</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>)
+                })}
+              </div>
+            </div>
+          </>) : (
+            <div className="bg-white rounded-xl shadow-sm border flex flex-col items-center justify-center h-96 text-gray-400">
+              <span className="text-5xl mb-4">👈</span><p className="text-sm">Pilih pegawai</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* MODALS */}
+      {(modal==='addPegawai'||modal==='editPegawai')&&(
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl max-w-2xl w-full p-6 max-h-[90vh] overflow-y-auto">
+            <h3 className="text-lg font-bold mb-4">{modal==='editPegawai'?'✏️ Edit':'👤 Tambah'} Pegawai</h3>
+            <form onSubmit={handleSavePegawai} className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                {[{n:'nama',l:'Nama *',r:true},{n:'nip',l:'NIP *',r:true},{n:'nik',l:'NIK'},{n:'tanggal_lahir',l:'Tgl Lahir *',t:'date',r:true},{n:'pangkat_gol_ruang',l:'Pangkat/Gol'},{n:'jabatan',l:'Jabatan *',r:true},{n:'jenjang_jabatan',l:'Jenjang'},{n:'kelompok_jabatan',l:'Kelompok'},{n:'kelas_jabatan',l:'Kelas'},{n:'tmt_cpns',l:'TMT CPNS',t:'date'}].map(f=>(
+                  <div key={f.n}><label className="block text-xs font-medium mb-1">{f.l}</label>
+                  <input name={f.n} type={f.t||'text'} required={f.r} defaultValue={modalData?.[f.n]||''} className="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-orange-500 outline-none"/></div>
+                ))}
+                <div><label className="block text-xs font-medium mb-1">Tingkat</label>
+                <select name="tingkat_id" defaultValue={modalData?.tingkat_id||''} className="w-full px-3 py-2 border rounded-lg text-sm outline-none">
+                  <option value="">Pilih</option><option value="1">Kantor Pusat</option><option value="2">Kantor SAR</option><option value="3">Pos SAR</option>
+                </select></div>
+              </div>
+              <hr/><p className="text-xs font-semibold text-gray-500">Pimpinan Langsung</p>
+              <div className="grid grid-cols-3 gap-3">
+                {['nama_pimpinan_langsung','nip_pimpinan_langsung','jabatan_pimpinan_langsung'].map(n=>(
+                  <input key={n} name={n} placeholder={n.includes('nama')?'Nama':n.includes('nip')?'NIP':'Jabatan'} defaultValue={modalData?.[n]||''} className="px-3 py-2 border rounded-lg text-sm outline-none"/>
+                ))}
+              </div>
+              <p className="text-xs font-semibold text-gray-500">Pimpinan</p>
+              <div className="grid grid-cols-3 gap-3">
+                {['nama_pimpinan','nip_pimpinan','jabatan_pimpinan'].map(n=>(
+                  <input key={n} name={n} placeholder={n.includes('nama')?'Nama':n.includes('nip')?'NIP':'Jabatan'} defaultValue={modalData?.[n]||''} className="px-3 py-2 border rounded-lg text-sm outline-none"/>
+                ))}
+              </div>
+              <div className="flex gap-3 pt-3">
+                <button type="submit" className="flex-1 bg-orange-500 hover:bg-orange-600 text-white py-2 rounded-lg font-medium text-sm">Simpan</button>
+                <button type="button" onClick={()=>setModal(null)} className="flex-1 bg-gray-200 text-gray-700 py-2 rounded-lg font-medium text-sm">Batal</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {(modal==='addFolder'||modal==='editFolder')&&(
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl max-w-md w-full p-6">
+            <h3 className="text-lg font-bold mb-4">{modal==='editFolder'?'✏️ Edit':'📁 Tambah'} Folder</h3>
+            <div className="bg-blue-50 rounded-lg p-3 mb-4 text-xs text-blue-600">ℹ️ Folder muncul di <b>SEMUA pegawai</b></div>
+            <form onSubmit={handleSaveFolder} className="space-y-4">
+              <input name="nama_folder" required defaultValue={modalData?.nama_folder||''} placeholder="Nama Folder" className="w-full px-3 py-2 border rounded-lg outline-none"/>
+              <select name="level_folder" required defaultValue={modalData?.level_folder||'Biasa'} className="w-full px-3 py-2 border rounded-lg outline-none">
+                <option value="Sangat Penting">🔴 Sangat Penting</option><option value="Penting">🟡 Penting</option><option value="Biasa">⚪ Biasa</option>
+              </select>
+              <div className="flex gap-3">
+                <button type="submit" className="flex-1 bg-orange-500 hover:bg-orange-600 text-white py-2 rounded-lg font-medium">Simpan</button>
+                <button type="button" onClick={()=>setModal(null)} className="flex-1 bg-gray-200 text-gray-700 py-2 rounded-lg font-medium">Batal</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {modal==='uploadBerkas'&&(
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl max-w-md w-full p-6">
+            <h3 className="text-lg font-bold mb-4">📤 Upload PDF</h3>
+            <form onSubmit={handleUploadBerkas} className="space-y-4">
+              <div><label className="block text-sm font-medium mb-1">Nama Berkas</label>
+              <input name="nama_berkas" required className="w-full px-3 py-2 border rounded-lg outline-none" placeholder="SK Pengangkatan"/></div>
+              <div><label className="block text-sm font-medium mb-1">File PDF (maks 50MB)</label>
+              <input ref={fileInputRef} name="file_pdf" type="file" accept=".pdf" required className="w-full px-3 py-2 border rounded-lg text-sm file:mr-3 file:py-1 file:px-3 file:rounded-lg file:border-0 file:bg-orange-100 file:text-orange-600 file:font-medium"/></div>
+              {uploading&&<div className="bg-orange-50 rounded-lg p-3 border border-orange-200"><div className="flex items-center gap-2"><div className="animate-spin h-4 w-4 border-2 border-orange-500 border-t-transparent rounded-full"></div><p className="text-sm text-orange-700">{uploadStatus}</p></div></div>}
+              <div className="flex gap-3">
+                <button type="submit" disabled={uploading} className="flex-1 bg-orange-500 hover:bg-orange-600 text-white py-2 rounded-lg font-medium disabled:opacity-50">{uploading?'⏳...':'📤 Upload'}</button>
+                <button type="button" onClick={()=>setModal(null)} disabled={uploading} className="flex-1 bg-gray-200 text-gray-700 py-2 rounded-lg font-medium disabled:opacity-50">Batal</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {viewingPDF&&(
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl w-full max-w-5xl h-[90vh] flex flex-col">
+            <div className="p-4 border-b flex items-center justify-between"><h3 className="font-bold">📄 PDF Viewer</h3>
+            <button onClick={closePDF} className="bg-red-500 text-white px-4 py-1.5 rounded-lg text-sm hover:bg-red-600">✕ Tutup</button></div>
+            <div className="flex-1">
+              {loadingPDF?<div className="flex flex-col items-center justify-center h-full"><div className="animate-spin h-10 w-10 border-4 border-orange-500 border-t-transparent rounded-full mb-4"></div><p className="text-gray-500">Loading...</p></div>
+              :pdfBlobUrl?<iframe src={pdfBlobUrl} className="w-full h-full" title="PDF"/>
+              :<div className="flex items-center justify-center h-full text-red-500">Gagal</div>}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+export default AdminPegawaiPage

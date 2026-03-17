@@ -1,6 +1,5 @@
 import React from 'react'
 import Sidebar from './Sidebar'
-import UploadProgress from '../upload/UploadProgress'
 
 function Layout({ activePage, onNavigate, children }) {
   return (
@@ -11,7 +10,6 @@ function Layout({ activePage, onNavigate, children }) {
           {children}
         </div>
       </div>
-      <UploadProgress />
     </div>
   )
 }
