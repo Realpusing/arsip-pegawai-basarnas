@@ -3,8 +3,17 @@ import JSZip from 'jszip'
 // Backend API URL
 const API_URL = 'http://localhost:3001'
 
+// Maksimal ukuran file: 500 KB
+const MAX_FILE_SIZE = 500 * 1024 // 500 KB
+
 // ========== COMPRESS PDF → ZIP ==========
 export async function compressPDF(file, onProgress) {
+  if (!file) throw new Error('File tidak ditemukan')
+
+  if (file.size > MAX_FILE_SIZE) {
+    throw new Error('Ukuran file melebihi batas maksimal 500 KB')
+  }
+
   onProgress?.('📖 Membaca file...')
   const arrayBuffer = await file.arrayBuffer()
   const originalSize = file.size
@@ -36,6 +45,9 @@ export async function compressPDF(file, onProgress) {
 
 // ========== UPLOAD TO GOOGLE DRIVE ==========
 export async function uploadToGoogleDrive(zipBlob, zipName, folderName, pegawaiName, onProgress) {
+  onProgress?.('🔐 Mengecek token Google...')
+  await ensureGoogleToken()
+
   onProgress?.('📤 Mengupload ke Google Drive...')
 
   const formData = new FormData()
@@ -66,6 +78,8 @@ export async function uploadToGoogleDrive(zipBlob, zipName, folderName, pegawaiN
 
 // ========== DOWNLOAD FROM GOOGLE DRIVE ==========
 export async function downloadFromGoogleDrive(fileId) {
+  await ensureGoogleToken()
+
   const res = await fetch(`${API_URL}/api/download?fileId=${fileId}`)
 
   if (!res.ok) {
@@ -94,6 +108,8 @@ export async function decompressZip(zipBlob) {
 // ========== DELETE FROM GOOGLE DRIVE ==========
 export async function deleteFromGoogleDrive(fileId) {
   try {
+    await ensureGoogleToken()
+
     await fetch(`${API_URL}/api/delete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -120,47 +136,110 @@ export function formatSize(bytes) {
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
   return (bytes / (1024 * 1024)).toFixed(2) + ' MB'
 }
-// ========== GOOGLE AUTH (untuk Admin upload) ==========
+
+// ========== GOOGLE AUTH (AUTO REFRESH TOKEN) ==========
 const CLIENT_ID = process.env.REACT_APP_GOOGLE_CLIENT_ID
 
 let accessToken = null
+let tokenClient = null
+
+function initTokenClient() {
+  if (tokenClient) return tokenClient
+  if (!window.google?.accounts?.oauth2) return null
+
+  tokenClient = window.google.accounts.oauth2.initTokenClient({
+    client_id: CLIENT_ID,
+    scope: 'https://www.googleapis.com/auth/drive.file',
+    callback: () => {}
+  })
+
+  return tokenClient
+}
 
 export function loginGoogle() {
   return new Promise((resolve, reject) => {
-    if (!window.google?.accounts?.oauth2) {
+    const client = initTokenClient()
+    if (!client) {
       reject(new Error('Google API belum dimuat. Refresh halaman.'))
       return
     }
 
-    const client = window.google.accounts.oauth2.initTokenClient({
-      client_id: CLIENT_ID,
-      scope: 'https://www.googleapis.com/auth/drive.file',
-      callback: (response) => {
-        if (response.error) {
-          reject(new Error(response.error))
-        } else {
-          accessToken = response.access_token
-          localStorage.setItem('gdrive_token', response.access_token)
-          resolve(response.access_token)
-        }
+    client.callback = (response) => {
+      if (response.error) {
+        reject(new Error(response.error))
+      } else {
+        accessToken = response.access_token
+        localStorage.setItem('gdrive_token', response.access_token)
+        localStorage.setItem('gdrive_token_time', Date.now().toString())
+        resolve(response.access_token)
       }
-    })
+    }
 
     client.requestAccessToken()
   })
 }
 
+function isTokenValid() {
+  const savedToken = localStorage.getItem('gdrive_token')
+  const tokenTime = localStorage.getItem('gdrive_token_time')
+
+  if (!savedToken || !tokenTime) return false
+
+  const elapsed = Date.now() - parseInt(tokenTime)
+  return elapsed < 50 * 60 * 1000 // valid 50 menit
+}
+
 export function isGoogleLoggedIn() {
-  if (accessToken) return true
+  if (accessToken && isTokenValid()) return true
+
   const saved = localStorage.getItem('gdrive_token')
-  if (saved) {
+  if (saved && isTokenValid()) {
     accessToken = saved
     return true
   }
+
   return false
 }
 
 export function logoutGoogle() {
   accessToken = null
+  tokenClient = null
   localStorage.removeItem('gdrive_token')
+  localStorage.removeItem('gdrive_token_time')
+}
+
+// Auto refresh token kalau expired
+export async function ensureGoogleToken() {
+  if (accessToken && isTokenValid()) return accessToken
+
+  const saved = localStorage.getItem('gdrive_token')
+  if (saved && isTokenValid()) {
+    accessToken = saved
+    return saved
+  }
+
+  try {
+    return await new Promise((resolve, reject) => {
+      const client = initTokenClient()
+      if (!client) {
+        reject(new Error('Google API not ready'))
+        return
+      }
+
+      client.callback = (response) => {
+        if (response.error) {
+          reject(new Error(response.error))
+        } else {
+          accessToken = response.access_token
+          localStorage.setItem('gdrive_token', response.access_token)
+          localStorage.setItem('gdrive_token_time', Date.now().toString())
+          resolve(response.access_token)
+        }
+      }
+
+      client.requestAccessToken({ prompt: '' })
+    })
+  } catch (e) {
+    return await loginGoogle()
+  }
 }

@@ -15,8 +15,8 @@ const upload = multer({ storage: multer.memoryStorage() })
 // ========== OAUTH2 CONFIG ==========
 // ✅ Ganti dengan Client ID dan Client Secret dari Step 1
 // Gantilah string rahasia yang tadinya ada di sini dengan ini:
-const CLIENT_ID = process.env.CLIENT_ID;
-const CLIENT_SECRET = process.env.CLIENT_SECRET;
+const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 const REDIRECT_URI = 'http://localhost:3001/auth/callback'
 
 // ✅ Ganti dengan Folder ID kamu

@@ -7,6 +7,7 @@ import {
 } from '../../lib/googleDrive'
 import { useAuth } from '../../context/AuthContext'
 import toast from 'react-hot-toast'
+import { hitungMasaKerja, hitungUsia } from '../../lib/helpers'
 
 function UserProfilePage() {
   const { user } = useAuth()
@@ -82,7 +83,6 @@ function UserProfilePage() {
   const handleUploadBerkas = async (e) => {
     e.preventDefault()
 
-    // Cek Google Login
     if (!isGoogleLoggedIn()) {
       try {
         await loginGoogle()
@@ -107,10 +107,8 @@ function UserProfilePage() {
     const loadingToast = toast.loading('📤 Memproses upload...')
 
     try {
-      // 1. Compress
       const compressed = await compressPDF(file, setUploadStatus)
 
-      // 2. Upload ke Google Drive
       const result = await uploadToGoogleDrive(
         compressed.zipBlob,
         compressed.zipName,
@@ -119,7 +117,6 @@ function UserProfilePage() {
         setUploadStatus
       )
 
-      // 3. Simpan link ke database
       setUploadStatus('💾 Menyimpan...')
       const { error } = await supabase.from('berkas').insert({
         folder_id: folderId,
@@ -188,10 +185,42 @@ function UserProfilePage() {
     }
   }
 
+  // ========== CLOSE PDF ==========
   const closePDF = () => {
     if (pdfBlobUrl) URL.revokeObjectURL(pdfBlobUrl)
     setPdfBlobUrl(null)
     setViewingPDF(false)
+  }
+
+  // ========== DELETE BERKAS ==========
+  const deleteBerkas = async (b) => {
+    if (!window.confirm(`Hapus berkas "${b.nama_berkas}"?\n\nFile di Google Drive juga akan dihapus.`)) return
+
+    const loadingToast = toast.loading('🗑️ Menghapus...')
+
+    try {
+      // Hapus dari Google Drive
+      const fid = extractFileId(b.lokasi_berkas)
+      if (fid) {
+        try { await deleteFromGoogleDrive(fid) } catch (e) { /* ignore */ }
+      }
+
+      // Hapus dari database (hanya milik sendiri)
+      const { error } = await supabase
+        .from('berkas')
+        .delete()
+        .eq('id', b.id)
+        .eq('profile_id', profile.id)
+
+      if (error) throw error
+
+      toast.dismiss(loadingToast)
+      toast.success('Berkas berhasil dihapus!')
+      loadBerkas()
+    } catch (err) {
+      toast.dismiss(loadingToast)
+      toast.error('Gagal menghapus: ' + err.message)
+    }
   }
 
   // ========== SEARCH FILTER ==========
@@ -235,7 +264,6 @@ function UserProfilePage() {
           <h1 className="text-2xl font-bold text-gray-800">👤 Data Saya</h1>
           <p className="text-gray-500 text-sm">Lihat data profil dan kelola berkas dokumen Anda</p>
         </div>
-        {/* Google Drive Status */}
         <div>
           {gLoggedIn ? (
             <div className="bg-green-50 border border-green-200 rounded-lg px-4 py-2 flex items-center gap-2">
@@ -258,7 +286,7 @@ function UserProfilePage() {
         <span className="mt-0.5">ℹ️</span>
         <div>
           <p className="text-sm text-green-700">Ini adalah data <b>milik Anda</b>.</p>
-          <p className="text-xs text-green-600 mt-1">Anda bisa upload berkas ke folder yang tersedia. Hubungi Admin jika ada data profil yang perlu diperbarui.</p>
+          <p className="text-xs text-green-600 mt-1">Anda bisa upload & hapus berkas di folder yang tersedia. Hubungi Admin jika ada data profil yang perlu diperbarui.</p>
         </div>
       </div>
 
@@ -279,7 +307,7 @@ function UserProfilePage() {
           {[
             { l: 'NIK', v: profile.nik },
             { l: 'Tanggal Lahir', v: profile.tanggal_lahir ? new Date(profile.tanggal_lahir).toLocaleDateString('id-ID') : '-' },
-            { l: 'Usia', v: profile.usia ? `${profile.usia} tahun` : '-' },
+            { l: 'Usia', v: hitungUsia(profile.tanggal_lahir) ? `${hitungUsia(profile.tanggal_lahir)} tahun` : '-' },
             { l: 'Pangkat/Gol Ruang', v: profile.pangkat_gol_ruang },
             { l: 'Jabatan', v: profile.jabatan },
             { l: 'Jenjang Jabatan', v: profile.jenjang_jabatan },
@@ -287,7 +315,7 @@ function UserProfilePage() {
             { l: 'Kelas Jabatan', v: profile.kelas_jabatan },
             { l: 'Tingkat', v: profile.tingkat?.nama },
             { l: 'TMT CPNS', v: profile.tmt_cpns ? new Date(profile.tmt_cpns).toLocaleDateString('id-ID') : '-' },
-            { l: 'Masa Kerja', v: `${profile.masa_kerja_tahun || 0} tahun ${profile.masa_kerja_bulan || 0} bulan ${profile.masa_kerja_hari || 0} hari` },
+            { l: 'Masa Kerja', v: hitungMasaKerja(profile.tmt_cpns).text },
             { l: 'Pimpinan Langsung', v: profile.nama_pimpinan_langsung },
           ].map((x, i) => (
             <div key={i} className="bg-gray-50 rounded-lg p-3">
@@ -312,19 +340,12 @@ function UserProfilePage() {
             />
           </div>
           {searchBerkas && (
-            <button
-              onClick={() => setSearchBerkas('')}
-              className="text-gray-400 hover:text-gray-600 px-2"
-            >
-              ✕
-            </button>
+            <button onClick={() => setSearchBerkas('')} className="text-gray-400 hover:text-gray-600 px-2">✕</button>
           )}
           <div className="text-sm text-gray-400">
             {filteredBerkas.length} / {berkas.length} berkas
           </div>
         </div>
-
-        {/* Search Results Summary */}
         {searchBerkas && (
           <div className="mt-3 pt-3 border-t">
             {filteredBerkas.length === 0 ? (
@@ -344,14 +365,11 @@ function UserProfilePage() {
       <div className="bg-white rounded-xl shadow-sm border">
         <div className="p-4 border-b">
           <h3 className="font-semibold">📁 Berkas Dokumen Saya</h3>
-          <p className="text-xs text-gray-500 mt-1">Upload berkas PDF ke folder yang tersedia</p>
+          <p className="text-xs text-gray-500 mt-1">Upload, lihat, download, atau hapus berkas PDF</p>
         </div>
         <div className="p-4 space-y-3">
           {folders.map(folder => {
-            // Filter berkas berdasarkan folder DAN search
             const folderBerkas = filteredBerkas.filter(b => b.folder_id === folder.id)
-
-            // Kalau search aktif, sembunyikan folder yang tidak ada hasil
             if (searchBerkas && folderBerkas.length === 0) return null
 
             return (
@@ -368,13 +386,8 @@ function UserProfilePage() {
                     }`}>{folder.level_folder}</span>
                     <span className="text-xs text-gray-400">({folderBerkas.length})</span>
                   </div>
-
-                  {/* Upload Button */}
                   <button
-                    onClick={() => {
-                      setModal('uploadBerkas')
-                      setModalData({ folderId: folder.id })
-                    }}
+                    onClick={() => { setModal('uploadBerkas'); setModalData({ folderId: folder.id }) }}
                     className="bg-orange-500 hover:bg-orange-600 text-white px-3 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1"
                   >
                     📤 Upload PDF
@@ -394,32 +407,25 @@ function UserProfilePage() {
                           <span className="text-lg shrink-0">📄</span>
                           <div className="min-w-0">
                             <p className="text-sm font-medium text-gray-800 truncate">
-                              {/* Highlight search term */}
-                              {searchBerkas ? (
-                                highlightText(b.nama_berkas, searchBerkas)
-                              ) : (
-                                b.nama_berkas
-                              )}
+                              {searchBerkas ? highlightText(b.nama_berkas, searchBerkas) : b.nama_berkas}
                             </p>
                             <p className="text-xs text-gray-400">
-                              {new Date(b.created_at).toLocaleDateString('id-ID', {
-                                day: 'numeric', month: 'short', year: 'numeric'
-                              })}
+                              {new Date(b.created_at).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })}
                             </p>
                           </div>
                         </div>
                         <div className="flex gap-1 shrink-0 ml-2">
-                          <button
-                            onClick={() => viewBerkas(b)}
-                            className="bg-green-100 text-green-600 px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-green-200 transition"
-                          >
+                          <button onClick={() => viewBerkas(b)}
+                            className="bg-green-100 text-green-600 px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-green-200 transition">
                             👁️ Lihat
                           </button>
-                          <button
-                            onClick={() => downloadBerkas(b)}
-                            className="bg-blue-100 text-blue-600 px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-blue-200 transition"
-                          >
+                          <button onClick={() => downloadBerkas(b)}
+                            className="bg-blue-100 text-blue-600 px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-blue-200 transition">
                             ⬇️ Download
+                          </button>
+                          <button onClick={() => deleteBerkas(b)}
+                            className="bg-red-100 text-red-600 px-3 py-1.5 rounded-lg text-xs font-medium hover:bg-red-200 transition">
+                            🗑️ Hapus
                           </button>
                         </div>
                       </div>
@@ -430,8 +436,13 @@ function UserProfilePage() {
             )
           })}
 
-          {/* Tidak ada berkas sama sekali */}
-          
+          {berkas.length === 0 && !searchBerkas && (
+            <div className="text-center py-12 text-gray-400">
+              <span className="text-4xl">📭</span>
+              <p className="mt-2">Belum ada berkas dokumen</p>
+              <p className="text-sm mt-1">Klik "📤 Upload PDF" di folder untuk menambahkan</p>
+            </div>
+          )}
         </div>
       </div>
 
@@ -440,44 +451,30 @@ function UserProfilePage() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl max-w-md w-full p-6">
             <h3 className="text-lg font-bold mb-4">📤 Upload PDF</h3>
-
             <div className="bg-blue-50 rounded-lg p-3 mb-4 text-xs text-blue-700 space-y-1">
               <p className="font-semibold">📋 Cara upload:</p>
               <p>1. Masukkan nama berkas</p>
               <p>2. Pilih file PDF dari komputer</p>
               <p>3. File akan di-compress & disimpan ke Google Drive</p>
             </div>
-
             <form onSubmit={handleUploadBerkas} className="space-y-4">
               <div>
                 <label className="block text-sm font-medium mb-1">Nama Berkas</label>
-                <input
-                  name="nama_berkas"
-                  required
+                <input name="nama_berkas" required
                   className="w-full px-3 py-2.5 border rounded-lg focus:ring-2 focus:ring-orange-500 outline-none"
-                  placeholder="Contoh: SK Pengangkatan CPNS"
-                />
+                  placeholder="Contoh: SK Pengangkatan CPNS" />
               </div>
-
               <div>
                 <label className="block text-sm font-medium mb-1">File PDF (maks 50MB)</label>
-                <input
-                  ref={fileInputRef}
-                  name="file_pdf"
-                  type="file"
-                  accept=".pdf"
-                  required
-                  className="w-full px-3 py-2 border rounded-lg text-sm file:mr-3 file:py-1 file:px-3 file:rounded-lg file:border-0 file:bg-orange-100 file:text-orange-600 file:font-medium file:cursor-pointer"
-                />
+                <input ref={fileInputRef} name="file_pdf" type="file" accept=".pdf" required
+                  className="w-full px-3 py-2 border rounded-lg text-sm file:mr-3 file:py-1 file:px-3 file:rounded-lg file:border-0 file:bg-orange-100 file:text-orange-600 file:font-medium file:cursor-pointer" />
               </div>
-
               <div className="bg-gray-50 rounded-lg p-3 text-xs text-gray-600">
                 <p className="font-medium">📂 Upload ke folder:</p>
                 <p className="mt-1 font-mono text-orange-600">
                   {folders.find(f => f.id === modalData?.folderId)?.nama_folder || '...'}
                 </p>
               </div>
-
               {uploading && (
                 <div className="bg-orange-50 rounded-lg p-4 border border-orange-200">
                   <div className="flex items-center gap-2 mb-2">
@@ -489,21 +486,13 @@ function UserProfilePage() {
                   </div>
                 </div>
               )}
-
               <div className="flex gap-3">
-                <button
-                  type="submit"
-                  disabled={uploading}
-                  className="flex-1 bg-orange-500 hover:bg-orange-600 text-white py-2.5 rounded-lg font-medium disabled:opacity-50 transition"
-                >
+                <button type="submit" disabled={uploading}
+                  className="flex-1 bg-orange-500 hover:bg-orange-600 text-white py-2.5 rounded-lg font-medium disabled:opacity-50 transition">
                   {uploading ? '⏳ Proses...' : '📤 Compress & Upload'}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => { setModal(null); setModalData(null) }}
-                  disabled={uploading}
-                  className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-700 py-2.5 rounded-lg font-medium disabled:opacity-50 transition"
-                >
+                <button type="button" onClick={() => { setModal(null); setModalData(null) }} disabled={uploading}
+                  className="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-700 py-2.5 rounded-lg font-medium disabled:opacity-50 transition">
                   Batal
                 </button>
               </div>
@@ -518,10 +507,8 @@ function UserProfilePage() {
           <div className="bg-white rounded-xl w-full max-w-5xl h-[90vh] flex flex-col">
             <div className="p-4 border-b flex items-center justify-between">
               <h3 className="font-bold">📄 PDF Viewer</h3>
-              <button
-                onClick={closePDF}
-                className="bg-red-500 text-white px-4 py-1.5 rounded-lg text-sm hover:bg-red-600"
-              >
+              <button onClick={closePDF}
+                className="bg-red-500 text-white px-4 py-1.5 rounded-lg text-sm hover:bg-red-600">
                 ✕ Tutup
               </button>
             </div>
@@ -534,9 +521,7 @@ function UserProfilePage() {
               ) : pdfBlobUrl ? (
                 <iframe src={pdfBlobUrl} className="w-full h-full" title="PDF" />
               ) : (
-                <div className="flex items-center justify-center h-full text-red-500">
-                  Gagal memuat PDF
-                </div>
+                <div className="flex items-center justify-center h-full text-red-500">Gagal memuat PDF</div>
               )}
             </div>
           </div>
@@ -551,15 +536,10 @@ function highlightText(text, search) {
   if (!search) return text
   const regex = new RegExp(`(${search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi')
   const parts = text.split(regex)
-
   return parts.map((part, i) =>
     regex.test(part) ? (
-      <span key={i} className="bg-yellow-200 text-yellow-900 font-semibold rounded px-0.5">
-        {part}
-      </span>
-    ) : (
-      part
-    )
+      <span key={i} className="bg-yellow-200 text-yellow-900 font-semibold rounded px-0.5">{part}</span>
+    ) : part
   )
 }
 
