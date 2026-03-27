@@ -44,6 +44,48 @@ export function AuthProvider({ children }) {
     setUser(null)
   }
 
+  // ✅ TAMBAHAN: Update user langsung tanpa reload
+  const updateUser = (newData) => {
+    setUser(prev => {
+      const updated = { ...prev, ...newData }
+      localStorage.setItem('user', JSON.stringify(updated))
+      return updated
+    })
+  }
+
+  // ✅ TAMBAHAN: Refresh user lengkap dari database
+  const refreshUser = async () => {
+    if (!user?.id) return null
+    try {
+      const { data: userData, error: userError } = await supabase
+        .from('users')
+        .select('*, level:level_id(id, nama)')
+        .eq('id', user.id)
+        .single()
+
+      if (userError || !userData) return null
+
+      const { data: profileData } = await supabase
+        .from('profile')
+        .select('*')
+        .eq('user_id', userData.id)
+        .single()
+
+      const fullUser = {
+        ...userData,
+        profile: profileData || null,
+        profile_id: profileData?.id || null
+      }
+
+      localStorage.setItem('user', JSON.stringify(fullUser))
+      setUser(fullUser)
+      return fullUser
+    } catch (err) {
+      console.error('refreshUser error:', err)
+      return null
+    }
+  }
+
   // Role checks
   const levelName = user?.level?.nama || ''
   const isAdmin = levelName === 'Admin'
@@ -67,6 +109,8 @@ export function AuthProvider({ children }) {
       user,
       login,
       logout,
+      updateUser,    // ✅ BARU
+      refreshUser,   // ✅ BARU
       isAdmin,
       isPimpinan,
       isPejabat,

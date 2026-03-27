@@ -12,6 +12,7 @@ function PimpinanPegawaiPage() {
   const [berkas, setBerkas] = useState([])
   const [selectedPegawai, setSelectedPegawai] = useState(null)
   const [search, setSearch] = useState('')
+  const [folderSearch, setFolderSearch] = useState('')
   const [loading, setLoading] = useState(true)
   const [viewingPDF, setViewingPDF] = useState(false)
   const [pdfBlobUrl, setPdfBlobUrl] = useState(null)
@@ -28,7 +29,6 @@ function PimpinanPegawaiPage() {
       if (folderData) setFolders(folderData)
 
       if (isPimpinan) {
-        // PIMPINAN: Lihat SEMUA pegawai
         const { data } = await supabase
           .from('profile')
           .select('*, tingkat:tingkat_id(nama)')
@@ -36,7 +36,6 @@ function PimpinanPegawaiPage() {
         if (data) setPegawai(data)
 
       } else if (isPejabat) {
-        // PEJABAT: Hanya lihat anak buah langsung (filter pakai NIP)
         const pejabatProfile = user?.profile
 
         if (pejabatProfile?.nip) {
@@ -68,6 +67,7 @@ function PimpinanPegawaiPage() {
 
   const selectPegawai = (p) => {
     setSelectedPegawai(p)
+    setFolderSearch('')
     loadBerkas(p.id)
   }
 
@@ -119,6 +119,25 @@ function PimpinanPegawaiPage() {
     p.nama.toLowerCase().includes(search.toLowerCase()) ||
     p.nip.includes(search)
   )
+
+  // ✅ Filter folders berdasarkan pencarian (nama folder, level, atau nama berkas di dalamnya)
+  const filteredFolders = folders.filter((folder) => {
+    if (!folderSearch.trim()) return true
+    const q = folderSearch.toLowerCase()
+    // Cocokkan nama folder
+    if (folder.nama_folder?.toLowerCase().includes(q)) return true
+    // Cocokkan level folder
+    if (folder.level_folder?.toLowerCase().includes(q)) return true
+    // Cocokkan nama berkas di dalam folder
+    const fb = berkas.filter((b) => b.folder_id === folder.id)
+    if (fb.some((b) => b.nama_berkas?.toLowerCase().includes(q))) return true
+    return false
+  })
+
+  // ✅ Hitung total berkas yang cocok
+  const totalMatchedBerkas = filteredFolders.reduce((acc, folder) => {
+    return acc + berkas.filter((b) => b.folder_id === folder.id).length
+  }, 0)
 
   if (loading) {
     return (
@@ -264,57 +283,149 @@ function PimpinanPegawaiPage() {
                   </div>
                 </div>
 
-                {/* Folders & Berkas */}
+                {/* ✅ Folders & Berkas dengan SEARCH */}
                 <div className="bg-white rounded-xl shadow-sm border">
-                  <div className="p-4 border-b">
-                    <h3 className="font-semibold text-sm">📁 Folder & Berkas</h3>
+                  <div className="p-4 border-b space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-semibold text-sm">📁 Folder & Berkas</h3>
+                      <span className="text-xs text-gray-400">
+                        {folderSearch.trim()
+                          ? `${filteredFolders.length} folder ditemukan · ${totalMatchedBerkas} berkas`
+                          : `${folders.length} folder · ${berkas.length} berkas`
+                        }
+                      </span>
+                    </div>
+
+                    {/* 🔍 SEARCH FOLDER */}
+                    <div className="relative">
+                      <input
+                        type="text"
+                        value={folderSearch}
+                        onChange={(e) => setFolderSearch(e.target.value)}
+                        placeholder="🔍 Cari folder / berkas / level..."
+                        className="w-full px-3 py-2 border rounded-lg text-sm outline-none focus:ring-2 focus:ring-orange-500 pr-8"
+                      />
+                      {folderSearch && (
+                        <button
+                          onClick={() => setFolderSearch('')}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-lg"
+                          title="Hapus pencarian"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+
+                    {/* ✅ Quick filter chips */}
+                    <div className="flex flex-wrap gap-1.5">
+                      {['Sangat Penting', 'Penting', 'Biasa'].map((level) => {
+                        const count = folders.filter(f => f.level_folder === level).length
+                        if (count === 0) return null
+                        const isActive = folderSearch === level
+                        return (
+                          <button
+                            key={level}
+                            onClick={() => setFolderSearch(isActive ? '' : level)}
+                            className={`text-xs px-2.5 py-1 rounded-full border transition ${
+                              isActive
+                                ? level === 'Sangat Penting'
+                                  ? 'bg-red-500 text-white border-red-500'
+                                  : level === 'Penting'
+                                    ? 'bg-yellow-500 text-white border-yellow-500'
+                                    : 'bg-gray-500 text-white border-gray-500'
+                                : level === 'Sangat Penting'
+                                  ? 'bg-red-50 text-red-600 border-red-200 hover:bg-red-100'
+                                  : level === 'Penting'
+                                    ? 'bg-yellow-50 text-yellow-700 border-yellow-200 hover:bg-yellow-100'
+                                    : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'
+                            }`}
+                          >
+                            {level} ({count})
+                          </button>
+                        )
+                      })}
+                    </div>
                   </div>
+
                   <div className="p-4 space-y-3 overflow-y-auto" style={{ maxHeight: '55vh' }}>
-                    {folders.map((folder) => {
-                      const fb = berkas.filter((b) => b.folder_id === folder.id)
-                      return (
-                        <div key={folder.id} className="border rounded-lg overflow-hidden">
-                          <div className="bg-gray-50 px-3 py-2 flex items-center gap-2">
-                            <span>📁</span>
-                            <span className="font-medium text-sm">{folder.nama_folder}</span>
-                            <span className={`text-xs px-2 py-0.5 rounded-full ${
-                              folder.level_folder === 'Sangat Penting' ? 'bg-red-100 text-red-600' :
-                              folder.level_folder === 'Penting' ? 'bg-yellow-100 text-yellow-700' :
-                              'bg-gray-100 text-gray-600'
-                            }`}>{folder.level_folder}</span>
-                            <span className="text-xs text-gray-400">({fb.length})</span>
-                          </div>
-                          <div className="p-2">
-                            {fb.length === 0 ? (
-                              <p className="text-xs text-gray-400 text-center py-2">Kosong</p>
-                            ) : (
-                              fb.map((b) => (
-                                <div key={b.id} className="flex items-center justify-between bg-gray-50 p-2 rounded hover:bg-gray-100 mb-1">
-                                  <div className="flex items-center gap-2 min-w-0 flex-1">
-                                    <span>📄</span>
-                                    <p className="text-sm font-medium truncate">{b.nama_berkas}</p>
-                                  </div>
-                                  <div className="flex gap-1 shrink-0 ml-2">
-                                    <button
-                                      onClick={() => viewBerkas(b)}
-                                      className="bg-green-100 text-green-600 px-2 py-1 rounded text-xs hover:bg-green-200"
+                    {filteredFolders.length === 0 ? (
+                      <div className="text-center py-8 text-gray-400">
+                        <span className="text-4xl block mb-2">🔍</span>
+                        <p className="text-sm">Tidak ada folder yang cocok dengan "<b>{folderSearch}</b>"</p>
+                        <button
+                          onClick={() => setFolderSearch('')}
+                          className="mt-2 text-xs text-orange-500 hover:underline"
+                        >
+                          Hapus pencarian
+                        </button>
+                      </div>
+                    ) : (
+                      filteredFolders.map((folder) => {
+                        const fb = berkas.filter((b) => b.folder_id === folder.id)
+                        return (
+                          <div key={folder.id} className="border rounded-lg overflow-hidden">
+                            <div className="bg-gray-50 px-3 py-2 flex items-center gap-2">
+                              <span>📁</span>
+                              <span className="font-medium text-sm">{folder.nama_folder}</span>
+                              <span className={`text-xs px-2 py-0.5 rounded-full ${
+                                folder.level_folder === 'Sangat Penting' ? 'bg-red-100 text-red-600' :
+                                folder.level_folder === 'Penting' ? 'bg-yellow-100 text-yellow-700' :
+                                'bg-gray-100 text-gray-600'
+                              }`}>{folder.level_folder}</span>
+                              <span className="text-xs text-gray-400">({fb.length})</span>
+                            </div>
+                            <div className="p-2">
+                              {fb.length === 0 ? (
+                                <p className="text-xs text-gray-400 text-center py-2">Kosong</p>
+                              ) : (
+                                fb.map((b) => {
+                                  // ✅ Highlight berkas yang cocok dengan pencarian
+                                  const isHighlighted = folderSearch.trim() &&
+                                    b.nama_berkas?.toLowerCase().includes(folderSearch.toLowerCase())
+
+                                  return (
+                                    <div
+                                      key={b.id}
+                                      className={`flex items-center justify-between p-2 rounded hover:bg-gray-100 mb-1 ${
+                                        isHighlighted
+                                          ? 'bg-orange-50 border border-orange-200'
+                                          : 'bg-gray-50'
+                                      }`}
                                     >
-                                      👁️ Lihat
-                                    </button>
-                                    <button
-                                      onClick={() => downloadBerkas(b)}
-                                      className="bg-blue-100 text-blue-600 px-2 py-1 rounded text-xs hover:bg-blue-200"
-                                    >
-                                      ⬇️
-                                    </button>
-                                  </div>
-                                </div>
-                              ))
-                            )}
+                                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                                        <span>📄</span>
+                                        <p className={`text-sm font-medium truncate ${
+                                          isHighlighted ? 'text-orange-700' : ''
+                                        }`}>
+                                          {b.nama_berkas}
+                                          {isHighlighted && (
+                                            <span className="ml-1 text-xs text-orange-400">✦</span>
+                                          )}
+                                        </p>
+                                      </div>
+                                      <div className="flex gap-1 shrink-0 ml-2">
+                                        <button
+                                          onClick={() => viewBerkas(b)}
+                                          className="bg-green-100 text-green-600 px-2 py-1 rounded text-xs hover:bg-green-200"
+                                        >
+                                          👁️ Lihat
+                                        </button>
+                                        <button
+                                          onClick={() => downloadBerkas(b)}
+                                          className="bg-blue-100 text-blue-600 px-2 py-1 rounded text-xs hover:bg-blue-200"
+                                        >
+                                          ⬇️
+                                        </button>
+                                      </div>
+                                    </div>
+                                  )
+                                })
+                              )}
+                            </div>
                           </div>
-                        </div>
-                      )
-                    })}
+                        )
+                      })
+                    )}
                   </div>
                 </div>
               </>
