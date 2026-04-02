@@ -5,7 +5,7 @@ import toast, { Toaster } from 'react-hot-toast'
 const backgrounds = [
   '/backgrounds/cb64d2b1-0189-4b49-82a8-5d91df638c01.jpg',
   '/backgrounds/knseta.jpeg',
-  '/backgrounds/bg3.jpg',
+  '/backgrounds/ruang_tamu.jpg',
 ]
 
 function LoginPage() {
